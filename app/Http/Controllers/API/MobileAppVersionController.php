@@ -1,0 +1,22 @@
+<?php
+
+namespace App\Http\Controllers\API;
+
+use App\Http\Controllers\Controller;
+
+class MobileAppVersionController extends Controller
+{
+    public function __invoke (): array
+    {
+        return [
+            'ios' => [
+                'url' => 'https://apps.apple.com/us/app/openlittermap/id1475982147',
+                'version' => '7.11.1'
+            ],
+            'android' => [
+                'url' => 'https://play.google.com/store/apps/details?id=com.geotech.openlittermap',
+                'version' => '7.7.5'
+            ]
+        ];
+    }
+}

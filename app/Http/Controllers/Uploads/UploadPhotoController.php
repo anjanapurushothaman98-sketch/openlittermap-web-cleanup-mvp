@@ -1,0 +1,287 @@
+<?php
+
+namespace App\Http\Controllers\Uploads;
+
+use App\Models\Photo;
+
+use App\Events\ImageUploaded;
+use App\Events\NewCityAdded;
+use App\Events\NewCountryAdded;
+use App\Events\NewStateAdded;
+
+use App\Actions\Photos\MakeImageAction;
+use App\Actions\Photos\UploadPhotoAction;
+use App\Actions\Locations\ResolveLocationAction;
+use App\Enums\XpScore;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\UploadPhotoRequest;
+
+use App\Services\Metrics\MetricsService;
+use Carbon\Carbon;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
+
+class UploadPhotoController extends Controller
+{
+    public function __construct(
+        private MakeImageAction $makeImageAction,
+        private UploadPhotoAction $uploadPhotoAction,
+        private ResolveLocationAction $resolveLocationAction,
+        private MetricsService $metricsService,
+    ) {}
+
+    /**
+     * Upload a photo with GPS coordinates.
+     *
+     * Supports two modes:
+     * - Web: extracts lat/lon/date from EXIF (default)
+     * - Mobile: accepts explicit lat, lon, date fields (overrides EXIF)
+     *
+     * Awards XpScore::Upload (5) XP per upload to MySQL users.xp.
+     * Redis XP is handled by MetricsService when tags are processed
+     * (XpCalculator includes upload base in photo.xp — no Redis push here to avoid double-counting).
+     */
+    public function __invoke(UploadPhotoRequest $request): JsonResponse
+    {
+        $user = Auth::user();
+        $file = $request->file('photo');
+        $hasExplicit = $request->hasExplicitCoordinates();
+
+        try {
+            // 1. Process image & extract EXIF
+            $imageAndExif = $this->makeImageAction->run($file);
+            $image = $imageAndExif['image'];
+            $exif = $imageAndExif['exif'] ?? [];
+
+            // 2. Resolve coordinates and datetime
+            if ($hasExplicit) {
+                // Mobile: explicit lat/lon/date from request
+                $lat = (float) $request->input('lat');
+                $lon = (float) $request->input('lon');
+
+                $dateInput = $request->input('date');
+                $dateTime = is_numeric($dateInput)
+                    ? Carbon::createFromTimestamp((int) $dateInput)
+                    : Carbon::parse($dateInput);
+            } else {
+                // Web: extract datetime + GPS from EXIF. For HEIC this is the converted
+                // JPEG's EXIF (heif-convert embeds GPS/datetime) — the raw HEIC can't be
+                // read by exif_read_data, so HEIC GPS validation happens here rather than
+                // in UploadPhotoRequest. Defensive for all web uploads.
+                $dateTime = getDateTimeForPhoto($exif) ?? Carbon::now();
+
+                $hasGps = ! empty($exif['GPSLatitudeRef'])
+                    && ! empty($exif['GPSLatitude'])
+                    && ! empty($exif['GPSLongitudeRef'])
+                    && ! empty($exif['GPSLongitude']);
+
+                $coordinates = $hasGps ? getCoordinatesFromPhoto($exif) : null;
+
+                if ($coordinates === null) {
+                    return response()->json([
+                        'success' => false,
+                        'error' => 'no_gps',
+                        'message' => 'Sorry, no GPS on this one.',
+                        'errors' => [],
+                    ], 422);
+                }
+
+                $lat = $coordinates[0];
+                $lon = $coordinates[1];
+            }
+
+            // 2b. Idempotent upload — if this user already uploaded a photo with
+            // this datetime, return the existing id instead of creating a duplicate.
+            // Pure lookup: no S3 write, no Photo::create, no XP/metrics side effects.
+            // Skipped for participant uploads (students share the facilitator's
+            // user_id and may legitimately share a datetime).
+            if (! $request->attributes->get('participant')) {
+                $existing = Photo::where('user_id', $user->id)
+                    ->where('datetime', $dateTime)
+                    ->orderBy('id')
+                    ->first();
+
+                if ($existing) {
+                    return response()->json([
+                        'success' => true,
+                        'photo_id' => $existing->id,
+                        'already_uploaded' => true,
+                        'tagged' => $existing->summary !== null,
+                        'xp_awarded' => 0,
+                    ]);
+                }
+            }
+
+            // 3. Upload full image + bbox thumbnail to S3.
+            // Reuse the already-decoded image for the bbox (resized in-memory)
+            // rather than re-running MakeImageAction — converts HEIC only once.
+            // The full upload streams $image before the resize, so mutating it
+            // afterwards is safe.
+            $imageName = $this->uploadPhotoAction->run(
+                $image,
+                $dateTime,
+                $file->hashName()
+            );
+
+            $bboxImageName = $this->uploadPhotoAction->run(
+                $image->resize(500, 500),
+                $dateTime,
+                $file->hashName(),
+                'bbox'
+            );
+
+            // 4. Resolve location from GPS coordinates
+            $location = $this->resolveLocationAction->run($lat, $lon);
+
+            // 5. Determine remaining/picked_up and device model
+            // At upload time: explicit request value wins, then user default, then true (remaining)
+            if ($request->has('picked_up')) {
+                $remaining = ! $request->boolean('picked_up');
+            } elseif ($user->picked_up !== null) {
+                $remaining = ! $user->picked_up;
+            } else {
+                $remaining = true; // null preference → default to remaining (unknown)
+            }
+
+            $deviceModel = $request->input('model', $exif['Model'] ?? 'Unknown');
+
+            // 6a. Determine photo visibility: request value → user default → true
+            // PhotoObserver::creating() overrides to false for school teams
+            if ($request->has('is_public')) {
+                $isPublic = $request->boolean('is_public');
+            } else {
+                $isPublic = $user->public_photos ?? true;
+            }
+
+            // 6. Create Photo — FKs only, no string duplication
+            $photo = Photo::create([
+                'user_id' => $user->id,
+                'filename' => $imageName,
+                'datetime' => $dateTime,
+                'remaining' => $remaining,
+                'lat' => $lat,
+                'lon' => $lon,
+                'model' => $deviceModel,
+                'country_id' => $location->country->id,
+                'state_id' => $location->state?->id,
+                'city_id' => $location->city?->id,
+                'platform' => $hasExplicit ? 'mobile' : 'web',
+                'is_public' => $isPublic,
+                'team_id' => $request->attributes->get('participant_team')?->id ?? $user->active_team,
+                'participant_id' => $request->attributes->get('participant')?->id,
+                'five_hundred_square_filepath' => $bboxImageName,
+                'address_array' => $location->addressArray,
+            ]);
+
+            // 7. Broadcast to real-time map
+            event(new ImageUploaded(
+                $user,
+                $photo,
+                $location->country,
+                $location->state,
+                $location->city,
+            ));
+
+            // 8. Notify on new locations
+            if ($location->country->wasRecentlyCreated) {
+                event(new NewCountryAdded(
+                    $location->country->country,
+                    $location->country->shortcode,
+                    now(),
+                    $user->id
+                ));
+            }
+
+            if ($location->state?->wasRecentlyCreated) {
+                event(new NewStateAdded(
+                    $location->state->state,
+                    $location->country->country,
+                    now(),
+                    $user->id
+                ));
+            }
+
+            if ($location->city?->wasRecentlyCreated) {
+                event(new NewCityAdded(
+                    $location->city->city,
+                    $location->state->state,
+                    $location->country->country,
+                    now(),
+                    $location->city->id,
+                    $lat,
+                    $lon,
+                    $photo->id
+                ));
+            }
+
+            // 9. Award upload XP to MySQL (immediate feedback for profile)
+            // and metrics table (so user appears on time-filtered leaderboards).
+            // Skip for school team photos — deferred until teacher approval,
+            // when MetricsService::processPhoto() handles the full XP.
+            // Private-by-choice photos (user setting) still get immediate XP.
+            $uploadXp = XpScore::Upload->xp();
+            $xpAwarded = 0;
+
+            $isSchoolPhoto = $photo->team_id
+                && ($team = \App\Models\Teams\Team::find($photo->team_id))
+                && $team->isSchool();
+
+            if (! $isSchoolPhoto) {
+                $user->increment('xp', $uploadXp);
+                $this->metricsService->recordUploadMetrics($photo, $uploadXp);
+                $xpAwarded = $uploadXp;
+            }
+
+            return response()->json([
+                'success' => true,
+                'photo_id' => $photo->id,
+                'lat' => $photo->lat,
+                'lon' => $photo->lon,
+                'city' => $location->city?->city,
+                'state' => $location->state?->state,
+                'country' => $location->country?->country,
+                'display_name' => $location->displayName,
+                'xp_awarded' => $xpAwarded,
+                'user_xp_total' => $user->xp,
+            ]);
+        } catch (\App\Exceptions\HeicConversionException $e) {
+            Log::error('Upload failed: HEIC conversion error', [
+                'user_id' => $user->id,
+                'platform' => $hasExplicit ? 'mobile' : 'web',
+                'message' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'error' => 'heic_conversion_failed',
+                'message' => "Sorry, we couldn't process this HEIC photo. Please try again, or set your iPhone to capture JPEGs (Settings → Camera → Formats → Most Compatible).",
+            ], 422);
+        } catch (\App\Exceptions\GeocodingException $e) {
+            Log::error('Upload failed: geocoding error', [
+                'user_id' => $user->id,
+                'platform' => $hasExplicit ? 'mobile' : 'web',
+                'lat' => $hasExplicit ? $request->input('lat') : 'exif',
+                'lon' => $hasExplicit ? $request->input('lon') : 'exif',
+                'message' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'error' => 'geocoding_failed',
+                'message' => 'Could not determine location from coordinates. Please try again.',
+            ], 422);
+        } catch (\Throwable $e) {
+            Log::error('Upload failed: unexpected error', [
+                'user_id' => $user->id,
+                'platform' => $hasExplicit ? 'mobile' : 'web',
+                'exception' => get_class($e),
+                'message' => $e->getMessage(),
+                'file' => $e->getFile() . ':' . $e->getLine(),
+            ]);
+
+            throw $e;
+        }
+    }
+}

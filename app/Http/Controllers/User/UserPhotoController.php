@@ -1,0 +1,112 @@
+<?php
+
+namespace App\Http\Controllers\User;
+
+use App\Actions\Photos\DeletePhotoAction;
+use App\Models\Photo;
+use App\Services\Metrics\MetricsService;
+use App\Traits\Photos\FilterPhotos;
+
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use App\Http\Controllers\Controller;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
+
+class UserPhotoController extends Controller
+{
+    protected $paginate = 300;
+
+    use FilterPhotos;
+
+    /**
+     * @deprecated No frontend consumer. Use POST /api/v3/tags for individual photo tagging.
+     */
+    public function bulkTag(Request $request): JsonResponse
+    {
+        return response()->json(['message' => 'Use POST /api/v3/tags for tagging'], 410);
+    }
+
+    /**
+     * Bulk delete user's own photos.
+     *
+     * Reverses metrics, removes S3 files, hard-deletes each photo.
+     * Cascading FKs on photo_tags (→ photo_tag_extras) handle relationship cleanup.
+     */
+    public function destroy(Request $request): array
+    {
+        $user = Auth::user();
+        $metricsService = app(MetricsService::class);
+        $deletePhotoAction = app(DeletePhotoAction::class);
+
+        $ids = ($request->selectAll) ? $request->exclIds : $request->inclIds;
+
+        $photos = $this->filterPhotos(json_encode($request->filters), $request->selectAll, $ids)->get();
+
+        $deleted = 0;
+
+        foreach ($photos as $photo) {
+            try {
+                if ($user->id !== $photo->user_id) {
+                    continue;
+                }
+
+                // Reverse metrics before delete (if photo was processed)
+                // MetricsService::deletePhoto() reverses both upload XP and tag XP
+                // from MySQL metrics, Redis, and users.xp
+                if ($photo->processed_at !== null) {
+                    $metricsService->deletePhoto($photo);
+                }
+
+                // Delete S3 files
+                $deletePhotoAction->run($photo);
+
+                // Hard delete — cascading FKs clean up photo_tags and extras
+                $photo->forceDelete();
+
+                $deleted++;
+            } catch (\Exception $e) {
+                Log::info(["Photo could not be deleted", $e->getMessage()]);
+            }
+        }
+
+        // Note: total_images is deprecated — profile reads Photo::count() as fallback
+
+        return ['success' => true];
+    }
+
+    /**
+     * Return filtered array of the users photos
+     *
+     * @return JsonResponse
+     */
+    public function filter (): JsonResponse
+    {
+        $query = $this->filterPhotos(request()->filters);
+        $paginate = $query->paginate($this->paginate);
+
+        return response()->json([
+            'count' => $paginate->total(),
+            'paginate' => $paginate
+        ]);
+    }
+
+    /**
+     * Return non-filtered array of the users photos
+     *
+     * @return array
+     */
+    public function index ()
+    {
+        $paginate = Photo::select('id', 'filename', 'verified', 'datetime', 'created_at')
+            ->where('user_id', auth()->user()->id)
+            ->whereNull('summary')
+            ->paginate($this->paginate);
+
+        return [
+            'paginate' => $paginate,
+            'count' => $paginate->total()
+        ];
+    }
+
+}

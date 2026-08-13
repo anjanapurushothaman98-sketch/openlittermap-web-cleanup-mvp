@@ -1,0 +1,179 @@
+<?php
+
+namespace App\Helpers;
+
+use Illuminate\Support\Facades\Log;
+use Abraham\TwitterOAuth\TwitterOAuth;
+
+class Twitter
+{
+    /**
+     * Master on/off switch for all X/Twitter posting. Every send method funnels
+     * through this. Posting requires TWITTER_ENABLED (default false), the
+     * production environment, and a configured consumer key — so an unset or
+     * empty key can never misfire a live call.
+     */
+    public static function isEnabled(): bool
+    {
+        return (bool) config('services.twitter.enabled')
+            && app()->environment('production')
+            && filled(config('services.twitter.consumer_key'))
+            && filled(config('services.twitter.consumer_secret'))
+            && filled(config('services.twitter.access_token'))
+            && filled(config('services.twitter.access_secret'));
+    }
+
+    public static function sendTweet (string $message): void
+    {
+        $consumer_key = config('services.twitter.consumer_key');
+        $consumer_secret = config('services.twitter.consumer_secret');
+        $access_token = config('services.twitter.access_token');
+        $access_token_secret = config('services.twitter.access_secret');
+
+        if (self::isEnabled())
+        {
+            $connection = new TwitterOAuth(
+                $consumer_key,
+                $consumer_secret,
+                $access_token,
+                $access_token_secret
+            );
+
+            $connection->setApiVersion('2');
+
+            $tweet = [
+                "text" => $message
+            ];
+
+            try
+            {
+                $status = $connection->post("tweets", $tweet, true);
+            }
+            catch (\Exception $exception)
+            {
+                \Log::info(['Twitter.sendMessage', $exception->getMessage()]);
+            }
+        }
+    }
+
+    /**
+     * Post a thread of tweets (reply chain).
+     *
+     * @param  string[]  $messages
+     * @return array{first_id: string|null, sent: int, total: int}
+     */
+    public static function sendThread(array $messages): array
+    {
+        $result = ['first_id' => null, 'sent' => 0, 'total' => count($messages)];
+
+        if (empty($messages)) {
+            return $result;
+        }
+
+        $consumer_key = config('services.twitter.consumer_key');
+        $consumer_secret = config('services.twitter.consumer_secret');
+        $access_token = config('services.twitter.access_token');
+        $access_token_secret = config('services.twitter.access_secret');
+
+        if (! self::isEnabled()) {
+            Log::info('Twitter thread skipped (disabled, not production, or missing keys)', ['count' => count($messages)]);
+            return $result;
+        }
+
+        $connection = new TwitterOAuth($consumer_key, $consumer_secret, $access_token, $access_token_secret);
+        $connection->setApiVersion('2');
+
+        $previousTweetId = null;
+
+        foreach ($messages as $text) {
+            $payload = ['text' => $text];
+
+            if ($previousTweetId) {
+                $payload['reply'] = ['in_reply_to_tweet_id' => $previousTweetId];
+            }
+
+            try {
+                $response = $connection->post('tweets', $payload, true);
+
+                $tweetId = $response->data->id ?? null;
+
+                if ($tweetId) {
+                    $previousTweetId = $tweetId;
+                    $result['first_id'] ??= $tweetId;
+                    $result['sent']++;
+                } else {
+                    Log::error('Twitter thread: no tweet ID in response', ['response' => $response]);
+                    break;
+                }
+            } catch (\Exception $e) {
+                Log::error('Twitter thread: failed to post tweet', ['error' => $e->getMessage()]);
+                break;
+            }
+        }
+
+        return $result;
+    }
+
+    public static function sendTweetWithImage (string $message, string $imagePath): void
+    {
+        $consumer_key = config('services.twitter.consumer_key');
+        $consumer_secret = config('services.twitter.consumer_secret');
+        $access_token = config('services.twitter.access_token');
+        $access_token_secret = config('services.twitter.access_secret');
+
+        if (self::isEnabled()) {
+            $connection = new TwitterOAuth(
+                $consumer_key,
+                $consumer_secret,
+                $access_token,
+                $access_token_secret
+            );
+
+        $media_id = null;
+
+        // Step 1: Upload media using v1.1 endpoint if image is provided
+        if ($imagePath && file_exists($imagePath)) {
+            try {
+                $media = $connection->upload('media/upload', ['media' => $imagePath]);
+
+                if (!empty($media->media_id_string)) {
+                    $media_id = $media->media_id_string;
+                }
+            } catch (\Exception $exception) {
+                \Log::error(['Twitter.sendTweetWithMedia - Media Upload', $exception->getMessage()]);
+            }
+        }
+
+        // Step 2: Post tweet using v2 endpoint with media reference if media was uploaded
+        $tweet_data = [
+            "text" => $message,
+        ];
+
+        if ($media_id) {
+            $tweet_data['media'] = [
+                "media_ids" => [$media_id]
+            ];
+        }
+
+        try {
+            $v2_connection = new TwitterOAuth(
+                $consumer_key,
+                $consumer_secret,
+                $access_token,
+                $access_token_secret
+            );
+            $v2_connection->setApiVersion('2'); // Set API version to v2
+
+            $response = $v2_connection->post("tweets", $tweet_data, true);
+
+            if ($v2_connection->getLastHttpCode() == 201) {
+                \Log::info('Tweet with media posted successfully.');
+            } else {
+                \Log::error('Error posting tweet: ' . json_encode($response));
+            }
+        } catch (\Exception $exception) {
+            \Log::error(['Twitter.sendTweetWithMedia', $exception->getMessage()]);
+        }
+        }
+    }
+}

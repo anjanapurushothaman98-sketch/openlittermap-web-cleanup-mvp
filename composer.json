@@ -1,0 +1,93 @@
+{
+    "name": "laravel/laravel",
+    "type": "project",
+    "description": "The Laravel Framework.",
+    "keywords": ["framework", "laravel"],
+    "license": "MIT",
+    "require": {
+        "php": "^8.2",
+        "ext-exif": "*",
+        "ext-json": "*",
+        "abraham/twitteroauth": "^3.1",
+        "ahmedsaoud31/laravel-permission-to-vuejs": "dev-master",
+        "anhskohbo/no-captcha": "^3.3",
+        "aws/aws-php-sns-message-validator": "^1.10",
+        "benjamincrozat/laravel-dropbox-driver": "^3.0",
+        "doctrine/dbal": "^3.10",
+        "guzzlehttp/guzzle": "^7.2.1",
+        "intervention/image": "^2.7",
+        "laravel/cashier": "^15.0",
+        "laravel/framework": "^11.0",
+        "laravel/helpers": "^1.2",
+        "laravel/pulse": "^1.2",
+        "laravel/reverb": "@beta",
+        "laravel/sanctum": "^4.1",
+        "laravel/slack-notification-channel": "^3.3",
+        "laravel/tinker": "^2.0",
+        "laravel/ui": "^4.0",
+        "league/flysystem-aws-s3-v3": "^3.0",
+        "maatwebsite/excel": "^3.1",
+        "openai-php/client": "^0.10.3",
+        "pusher/pusher-php-server": "^7.0",
+        "sentry/sentry-laravel": "^4.24",
+        "spatie/browsershot": "^4.3",
+        "spatie/laravel-backup": "^8.0",
+        "spatie/laravel-permission": "^6.0",
+        "stripe/stripe-php": "^13.0",
+        "symfony/expression-language": "^6.4",
+        "youthage/laravel-geohash": "^3.1"
+    },
+    "require-dev": {
+        "fakerphp/faker": "^1.23",
+        "laravel/boost": "^2.2",
+        "mockery/mockery": "^1.3.1",
+        "nunomaduro/collision": "^8.1",
+        "phpunit/phpunit": "^10.0",
+        "spatie/laravel-ignition": "^2.0"
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "preferred-install": "dist",
+        "sort-packages": true,
+        "allow-plugins": {
+            "php-http/discovery": false
+        }
+    },
+    "extra": {
+        "laravel": {
+            "dont-discover": []
+        }
+    },
+    "autoload": {
+        "files": [
+            "app/Helpers/helpers.php"
+        ],
+        "psr-4": {
+            "App\\": "app/"
+        },
+        "classmap": [
+            "database/seeds",
+            "database/factories"
+        ]
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\": "tests/"
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "scripts": {
+        "post-autoload-dump": [
+            "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",
+            "@php artisan package:discover --ansi"
+        ],
+        "post-root-package-install": [
+            "@php -r \"file_exists('.env') || copy('.env.example', '.env');\""
+        ],
+        "post-create-project-cmd": [
+            "@php artisan key:generate --ansi"
+        ],
+        "seed:tags": "php artisan db:seed --class='Database\\Seeders\\Tags\\CreateAllTagsSeeder'"
+    }
+}

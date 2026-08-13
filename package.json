@@ -1,0 +1,70 @@
+{
+  "name": "openlittermap-web",
+  "version": "5.12.13",
+  "type": "module",
+  "author": "Seán Lynch",
+  "license": "GPL v3",
+  "description": "OpenLitterMap Web App",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OpenLitterMap/openlittermap-web.git"
+  },
+  "keywords": [
+    "litter",
+    "citizen science",
+    "openlittermap",
+    "plastic pollution"
+  ],
+  "dependencies": {
+    "@headlessui/tailwindcss": "^0.2.1",
+    "@headlessui/vue": "^1.7.23",
+    "@heroicons/vue": "^2.2.0",
+    "autoprefixer": "^10.4.20",
+    "axios": "^1.15.0",
+    "chart.js": "^4.4.8",
+    "filepond": "^4.32.6",
+    "filepond-plugin-file-validate-size": "^2.2.8",
+    "filepond-plugin-file-validate-type": "^1.2.9",
+    "filepond-plugin-image-exif-orientation": "^1.0.11",
+    "filepond-plugin-image-preview": "^4.6.12",
+    "filepond-plugin-image-resize": "^2.0.10",
+    "floating-vue": "^5.2.2",
+    "laravel-echo": "^1.17.1",
+    "leaflet": "^1.9.4",
+    "leaflet.glify": "^3.3.1",
+    "moment": "^2.30.1",
+    "pinia": "^2.3.0",
+    "pinia-plugin-persistedstate": "4.2.0",
+    "postcss": "^8.4.49",
+    "puppeteer": "^24.43.0",
+    "pusher-js": "^8.4.0-rc2",
+    "tailwindcss": "^3.4.17",
+    "uuid": "^11.0.3",
+    "vue": "^3.5.13",
+    "vue-3-slider-component": "^1.0.2",
+    "vue-chartjs": "^5.3.2",
+    "vue-filepond": "^7.0.4",
+    "vue-i18n": "^11.0.0-rc.1",
+    "vue-loading-overlay": "^6.0.6",
+    "vue-number-animation": "^2.0.2",
+    "vue-router": "^4.5.0",
+    "vue-toastification": "^2.0.0-rc.5",
+    "vue-virtual-scroller": "^2.0.0-beta.8",
+    "vue3-recaptcha-v2": "^2.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/forms": "^0.5.9",
+    "@tailwindcss/typography": "^0.5.15",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "@vue/eslint-config-prettier": "^10.1.0",
+    "laravel-vite-plugin": "^1.1.1",
+    "postcss-nesting": "^13.0.1",
+    "prettier": "^3.4.2",
+    "sass-embedded": "^1.83.0",
+    "vite": "^6.4.3"
+  }
+}
